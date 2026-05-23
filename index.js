@@ -79,10 +79,12 @@ async function run() {
     app.get('/users/:email', async (req, res) => {
 
       const email = req.params.email;
-
-      const result = await usersCollection.findOne({ email });
-
-      res.send(result);
+    
+      const query = { email };
+    
+      const user = await usersCollection.findOne(query);
+    
+      res.send(user);
     });
 
     await client.db("admin").command({ ping: 1 });
