@@ -36,7 +36,68 @@ async function run() {
     const db = client.db('publicInfrastructureDB');
 
     const usersCollection = db.collection('users');
+
     const issuesCollection = db.collection('issues');
+
+
+
+    // VERIFY JWT
+    const verifyJWT = (req, res, next) => {
+
+      const authorization = req.headers.authorization;
+
+      if (!authorization) {
+
+        return res.status(401).send({
+          message: 'unauthorized access'
+        });
+      }
+
+      const token = authorization.split(' ')[1];
+
+      jwt.verify(
+        token,
+        process.env.ACCESS_TOKEN_SECRET,
+
+        (err, decoded) => {
+
+          if (err) {
+
+            return res.status(401).send({
+              message: 'unauthorized access'
+            });
+          }
+
+          req.decoded = decoded;
+
+          next();
+        }
+      );
+    };
+
+
+
+    // VERIFY ADMIN
+    const verifyAdmin = async (req, res, next) => {
+
+      const email = req.decoded.email;
+
+      const query = {
+        email
+      };
+
+      const user = await usersCollection.findOne(query);
+
+      if (user.role !== 'admin') {
+
+        return res.status(403).send({
+          message: 'forbidden access'
+        });
+      }
+
+      next();
+    };
+
 
     // JWT API
     app.post('/jwt', async (req, res) => {
@@ -170,7 +231,10 @@ async function run() {
     
       res.send(result);
     });
-    app.get('/admin/issues', async (req, res) => {
+    app.get(
+      '/admin/issues',
+      verifyJWT,
+      verifyAdmin, async (req, res) => {
 
       const result = await issuesCollection
         .find()
@@ -179,7 +243,10 @@ async function run() {
     
       res.send(result);
     });
-    app.patch('/issues/status/:id', async (req, res) => {
+    app.patch(
+      '/issues/status/:id',
+      verifyJWT,
+      verifyAdmin, async (req, res) => {
 
       const id = req.params.id;
     
@@ -204,26 +271,46 @@ async function run() {
       res.send(result);
     });
     // Get user by email
-    app.get('/users/:email', async (req, res) => {
-
-      const email = req.params.email;
+    app.get(
+      '/users/:email',
+      verifyJWT,
     
-      const query = { email };
+      async (req, res) => {
     
-      const user = await usersCollection.findOne(query);
+        const email = req.params.email;
     
-      res.send(user);
+        if (email !== req.decoded.email) {
+    
+          return res.status(403).send({
+            message: 'forbidden access'
+          });
+        }
+    
+        const query = { email };
+    
+        const user = await usersCollection.findOne(query);
+    
+        res.send(user);
     });
 
-    app.get('/users', async (req, res) => {
-
-      const result = await usersCollection
-        .find()
-        .toArray();
+    app.get(
+      '/users',
+      verifyJWT,
+      verifyAdmin,
     
-      res.send(result);
+      async (req, res) => {
+    
+        const result = await usersCollection
+          .find()
+          .toArray();
+    
+        res.send(result);
     });
-    app.patch('/users/admin/:id', async (req, res) => {
+
+    app.patch(
+      '/users/admin/:id',
+      verifyJWT,
+      verifyAdmin, async (req, res) => {
 
       const id = req.params.id;
     
@@ -245,7 +332,10 @@ async function run() {
     
       res.send(result);
     });
-    app.patch('/users/block/:id', async (req, res) => {
+    app.patch(
+      '/users/block/:id',
+      verifyJWT,
+      verifyAdmin, async (req, res) => {
 
       const id = req.params.id;
     
@@ -267,7 +357,10 @@ async function run() {
     
       res.send(result);
     });
-    app.delete('/users/:id', async (req, res) => {
+    app.delete(
+      '/users/:id',
+      verifyJWT,
+      verifyAdmin, async (req, res) => {
 
       const id = req.params.id;
     
