@@ -36,6 +36,7 @@ async function run() {
     const db = client.db('publicInfrastructureDB');
 
     const usersCollection = db.collection('users');
+    const issuesCollection = db.collection('issues');
 
     // JWT API
     app.post('/jwt', async (req, res) => {
@@ -75,6 +76,44 @@ async function run() {
       res.send(result);
     });
 
+    app.post('/issues', async (req, res) => {
+
+      const issueData = req.body;
+    
+      const result = await issuesCollection.insertOne({
+        ...issueData,
+        status: 'pending',
+        priority: 'normal',
+        upvotes: 0,
+        assignedStaff: null,
+        createdAt: new Date()
+      });
+    
+      res.send(result);
+    });
+    app.get('/my-issues/:email', async (req, res) => {
+
+      const email = req.params.email;
+    
+      const query = {
+        userEmail: email
+      };
+    
+      const result = await issuesCollection
+        .find(query)
+        .toArray();
+    
+      res.send(result);
+    });
+    app.get('/issues', async (req, res) => {
+
+      const result = await issuesCollection
+        .find()
+        .sort({ priority: -1 })
+        .toArray();
+    
+      res.send(result);
+    });
     // Get user by email
     app.get('/users/:email', async (req, res) => {
 
