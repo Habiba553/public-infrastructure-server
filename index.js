@@ -169,10 +169,75 @@ async function run() {
     });
     app.get('/issues', async (req, res) => {
 
+      const search = req.query.search || '';
+    
+      const category = req.query.category || '';
+    
+      const status = req.query.status || '';
+    
+      const sort = req.query.sort || '';
+    
+    
+    
+      let query = {};
+    
+    
+    
+      // SEARCH
+      if (search) {
+    
+        query.title = {
+          $regex: search,
+          $options: 'i'
+        };
+      }
+    
+    
+    
+      // CATEGORY FILTER
+      if (category) {
+    
+        query.category = category;
+      }
+    
+    
+    
+      // STATUS FILTER
+      if (status) {
+    
+        query.status = status;
+      }
+    
+    
+    
+      // SORT OPTION
+      let sortOption = {};
+    
+    
+    
+      if (sort === 'newest') {
+    
+        sortOption = {
+          createdAt: -1
+        };
+      }
+    
+    
+    
+      if (sort === 'upvotes') {
+    
+        sortOption = {
+          upvotes: -1
+        };
+      }
+    
+    
+    
       const result = await issuesCollection
-        .find()
-        .sort({ priority: -1 })
+        .find(query)
+        .sort(sortOption)
         .toArray();
+    
     
       res.send(result);
     });
