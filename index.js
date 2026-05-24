@@ -85,6 +85,7 @@ async function run() {
         status: 'pending',
         priority: 'normal',
         upvotes: 0,
+        upvotedUsers: [],
         assignedStaff: null,
         createdAt: new Date()
       });
@@ -111,6 +112,61 @@ async function run() {
         .find()
         .sort({ priority: -1 })
         .toArray();
+    
+      res.send(result);
+    });
+    app.get('/issues/:id', async (req, res) => {
+
+      const id = req.params.id;
+    
+      const query = {
+        _id: new ObjectId(id)
+      };
+    
+      const result = await issuesCollection.findOne(query);
+    
+      res.send(result);
+    });
+    app.patch('/issues/upvote/:id', async (req, res) => {
+
+      const id = req.params.id;
+    
+      const email = req.body.email;
+    
+      const issue = await issuesCollection.findOne({
+        _id: new ObjectId(id)
+      });
+    
+      if (
+        issue.upvotedUsers &&
+        issue.upvotedUsers.includes(email)
+      ) {
+    
+        return res.send({
+          message: 'already upvoted'
+        });
+      }
+    
+      const result = await issuesCollection.updateOne(
+    
+        {
+          _id: new ObjectId(id)
+        },
+    
+        {
+          $inc: {
+            upvotes: 1
+          },
+    
+          $set: {
+            priority: 'high'
+          },
+    
+          $push: {
+            upvotedUsers: email
+          }
+        }
+      );
     
       res.send(result);
     });
