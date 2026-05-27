@@ -3,11 +3,14 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
+const Stripe = require('stripe');
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 dotenv.config();
-
+const stripe = Stripe(
+  process.env.PAYMENT_GATEWAY_SECRET_KEY
+);
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -137,6 +140,29 @@ async function run() {
       res.send(result);
     });
 
+    app.patch('/users/premium/:email', async (req, res) => {
+
+      const email = req.params.email;
+    
+      const filter = {
+        email
+      };
+    
+      const updatedDoc = {
+    
+        $set: {
+          premium: true
+        }
+      };
+    
+      const result = await usersCollection.updateOne(
+        filter,
+        updatedDoc
+      );
+    
+      res.send(result);
+    });
+
     app.post('/issues', async (req, res) => {
 
       const issueData = req.body;
@@ -152,6 +178,67 @@ async function run() {
       });
     
       res.send(result);
+    });
+    app.patch('/issues/upvote/:id', verifyJWT, async (req, res) => {
+
+      const id = req.params.id;
+    
+      const email = req.decoded.email;
+    
+      const query = {
+        _id: new ObjectId(id)
+      };
+    
+    
+    
+      const issue =
+        await issuesCollection.findOne(query);
+    
+    
+    
+      // OWN ISSUE CHECK
+      if (issue.userEmail === email) {
+    
+        return res.status(403).send({
+          message: 'You cannot upvote your own issue'
+        });
+      }
+    
+    
+    
+      // DUPLICATE CHECK
+      if (issue.upvotedUsers.includes(email)) {
+    
+        return res.status(403).send({
+          message: 'Already upvoted'
+        });
+      }
+    
+    
+    
+      const updateDoc = {
+    
+        $inc: {
+          upvotes: 1
+        },
+    
+        $push: {
+          upvotedUsers: email
+        }
+      };
+    
+    
+    
+      const result =
+        await issuesCollection.updateOne(
+          query,
+          updateDoc
+        );
+    
+    
+    
+      res.send(result);
+    
     });
     app.get('/my-issues/:email', async (req, res) => {
 
@@ -175,21 +262,43 @@ async function run() {
     
       const status = req.query.status || '';
     
+      const priority = req.query.priority || '';
+    
       const sort = req.query.sort || '';
     
+      const page = parseInt(req.query.page) || 0;
     
-    
-      let query = {};
-    
-    
+      const size = parseInt(req.query.size) || 6;
+      
+      const query = {};
     
       // SEARCH
       if (search) {
     
-        query.title = {
-          $regex: search,
-          $options: 'i'
-        };
+        query.$or = [
+    
+          {
+            title: {
+              $regex: search,
+              $options: 'i'
+            }
+          },
+    
+          {
+            category: {
+              $regex: search,
+              $options: 'i'
+            }
+          },
+    
+          {
+            location: {
+              $regex: search,
+              $options: 'i'
+            }
+          }
+    
+        ];
       }
     
     
@@ -210,10 +319,16 @@ async function run() {
     
     
     
-      // SORT OPTION
+      // PRIORITY FILTER
+      if (priority) {
+    
+        query.priority = priority;
+      }
+    
+    
+    
+      // SORTING
       let sortOption = {};
-    
-    
     
       if (sort === 'newest') {
     
@@ -233,13 +348,28 @@ async function run() {
     
     
     
+      // TOTAL COUNT
+      const total =
+        await issuesCollection.countDocuments(query);
+    
+      // DATA
       const result = await issuesCollection
+    
         .find(query)
+    
         .sort(sortOption)
+    
+        .skip(page * size)
+    
+        .limit(size)
+    
         .toArray();
+      res.send({
     
+        issues: result,
+        total
+      });
     
-      res.send(result);
     });
     app.get('/issues/:id', async (req, res) => {
 
@@ -308,6 +438,43 @@ async function run() {
     
       res.send(result);
     });
+    app.get(
+      '/admin/statistics',
+      verifyJWT,
+      verifyAdmin,
+    
+      async (req, res) => {
+    
+        const totalUsers =
+          await usersCollection.countDocuments();
+    
+        const totalIssues =
+          await issuesCollection.countDocuments();
+    
+        const resolvedIssues =
+          await issuesCollection.countDocuments({
+            status: 'resolved'
+          });
+    
+        const pendingIssues =
+          await issuesCollection.countDocuments({
+            status: 'pending'
+          });
+    
+        const premiumUsers =
+          await usersCollection.countDocuments({
+            premium: true
+          });
+    
+        res.send({
+    
+          totalUsers,
+          totalIssues,
+          resolvedIssues,
+          pendingIssues,
+          premiumUsers
+        });
+    });
     app.patch(
       '/issues/status/:id',
       verifyJWT,
@@ -332,6 +499,16 @@ async function run() {
         filter,
         updatedDoc
       );
+    
+      res.send(result);
+    });
+    app.get('/latest-resolved-issues', async (req, res) => {
+
+      const result = await issuesCollection
+        .find({ status: 'resolved' })
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .toArray();
     
       res.send(result);
     });
@@ -436,6 +613,27 @@ async function run() {
       const result = await usersCollection.deleteOne(query);
     
       res.send(result);
+    });
+
+    app.post('/create-payment-intent', async (req, res) => {
+
+      const { amount } = req.body;
+    
+      const totalAmount = parseInt(amount * 100);
+    
+      const paymentIntent = await stripe.paymentIntents.create({
+    
+        amount: totalAmount,
+    
+        currency: 'usd',
+    
+        payment_method_types: ['card']
+      });
+    
+      res.send({
+    
+        clientSecret: paymentIntent.client_secret
+      });
     });
 
     await client.db("admin").command({ ping: 1 });
