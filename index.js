@@ -12,7 +12,13 @@ const stripe = Stripe(
   process.env.PAYMENT_GATEWAY_SECRET_KEY
 );
 const app = express();
+const admin = require("firebase-admin");
 const port = process.env.PORT || 5000;
+const serviceAccount = require("./firbase-admin-config.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 app.use(cors({
   origin: 'http://localhost:5173',
@@ -23,6 +29,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.o7z4zqh.mongodb.net/?appName=Cluster0`;
+
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -41,8 +48,8 @@ async function run() {
     const usersCollection = db.collection('users');
 
     const issuesCollection = db.collection('issues');
-
-
+    
+    const staffCollection = db.collection('staff'); // Fixed: Initialized staff collection required for your route
 
     // VERIFY JWT
     const verifyJWT = (req, res, next) => {
@@ -91,7 +98,7 @@ async function run() {
 
       const user = await usersCollection.findOne(query);
 
-      if (user.role !== 'admin') {
+      if (!user || user.role !== 'admin') {
 
         return res.status(403).send({
           message: 'forbidden access'
@@ -100,8 +107,19 @@ async function run() {
 
       next();
     };
-
-
+    const verifyStaff = async (req, res, next) => {
+      const email = req.decoded.email;
+    
+      const user = await usersCollection.findOne({ email });
+    
+      if (!user || user.role !== 'staff') {
+        return res.status(403).send({
+          message: 'forbidden access'
+        });
+      }
+    
+      next();
+    };
     // JWT API
     app.post('/jwt', async (req, res) => {
 
@@ -132,6 +150,8 @@ async function run() {
       const result = await usersCollection.insertOne({
         ...userData,
         role: 'citizen',
+        name: userData.displayName,
+        photo: userData.photoURL,
         premium: false,
         blocked: false,
         createdAt: new Date()
@@ -173,28 +193,61 @@ async function run() {
         priority: 'normal',
         upvotes: 0,
         upvotedUsers: [],
+        timeline: [
+          {
+            status: 'pending',
+            message: 'Issue reported by citizen',
+            updatedBy: issueData.userName,
+            time: new Date()
+          }
+        ],
         assignedStaff: null,
         createdAt: new Date()
       });
     
       res.send(result);
     });
-    app.patch('/issues/upvote/:id', verifyJWT, async (req, res) => {
 
+    // ==========================================
+    // FIXED: ADDED THE MISSING ISSUE ASSIGNMENT ROUTE HERE
+    // ==========================================
+    app.patch('/issues/assign/:id', verifyJWT, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-    
+      const { status, assignedStaff } = req.body;
+      const filter = { _id: new ObjectId(id) };
+      
+      const updateDoc = {
+        $set: {
+          status: status || 'pending',
+          assignedStaff: {
+            id: assignedStaff.id,
+            name: assignedStaff.name,
+            email: assignedStaff.email
+          }
+        },
+        $push: {
+          timeline: {
+            status: 'pending',
+            message: `Issue assigned to Staff: ${assignedStaff.name}`,
+            updatedBy: req.decoded.email,
+            time: new Date()
+          }
+        }
+      };
+
+      const result = await issuesCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    app.patch('/issues/upvote/:id', verifyJWT, async (req, res) => {
+      const id = req.params.id;
       const email = req.decoded.email;
-    
       const query = {
         _id: new ObjectId(id)
       };
     
-    
-    
       const issue =
         await issuesCollection.findOne(query);
-    
-    
     
       // OWN ISSUE CHECK
       if (issue.userEmail === email) {
@@ -204,8 +257,6 @@ async function run() {
         });
       }
     
-    
-    
       // DUPLICATE CHECK
       if (issue.upvotedUsers.includes(email)) {
     
@@ -213,21 +264,22 @@ async function run() {
           message: 'Already upvoted'
         });
       }
-    
-    
-    
       const updateDoc = {
-    
         $inc: {
           upvotes: 1
         },
     
         $push: {
-          upvotedUsers: email
+          timeline: {
+            status: 'upvote',
+            upvotedUsers: email,
+            message: 'Issue received an upvote',
+            updatedBy: email,
+            time: new Date()
+          }
         }
+        
       };
-    
-    
     
       const result =
         await issuesCollection.updateOne(
@@ -235,7 +287,138 @@ async function run() {
           updateDoc
         );
     
+      res.send(result);
     
+    });
+    app.patch(
+      '/issues/reject/:id',
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+    
+        const id = req.params.id;
+    
+        const result =
+          await issuesCollection.updateOne(
+    
+            {
+              _id: new ObjectId(id)
+            },
+    
+            {
+              $set: {
+                status: 'rejected'
+              },
+    
+              $push: {
+                timeline: {
+                  status: 'rejected',
+                  message: 'Issue rejected by admin',
+                  updatedBy: 'Admin',
+                  time: new Date()
+                }
+              }
+            }
+          );
+    
+        res.send(result);
+    });
+    app.delete('/issues/:id', verifyJWT, async (req, res) => {
+
+      const id = req.params.id;
+    
+      const query = {
+        _id: new ObjectId(id)
+      };
+    
+      const result =
+        await issuesCollection.deleteOne(query);
+    
+      res.send(result);
+    
+    });
+    app.patch('/issues/:id', verifyJWT, async (req, res) => {
+
+      const id = req.params.id;
+      const updatedData = req.body;
+      const query = {
+        _id: new ObjectId(id)
+      };
+    
+      const updateDoc = {
+
+        $set: {
+      
+          title: updatedData.title,
+      
+          description: updatedData.description,
+      
+          location: updatedData.location,
+      
+          category: updatedData.category,
+      
+          image: updatedData.image
+      
+        },
+      
+        $push: {
+      
+          timeline: {
+      
+            status: 'updated',
+      
+            message: 'Issue updated by citizen',
+      
+            updatedBy: updatedData.userName,
+      
+            time: new Date()
+          }
+        }
+      };
+    
+      const result =
+        await issuesCollection.updateOne(
+          query,
+          updateDoc
+        );
+    
+      res.send(result);
+    
+    });
+    app.patch('/issues/boost/:id', verifyJWT, async (req, res) => {
+
+      const id = req.params.id;
+    
+      const query = {
+        _id: new ObjectId(id)
+      };
+    
+      const updateDoc = {
+    
+        $set: {
+          priority: 'high'
+        },
+    
+        $push: {
+    
+          timeline: {
+    
+            status: 'boosted',
+    
+            message: 'Issue priority boosted',
+    
+            updatedBy: req.decoded.email,
+    
+            time: new Date()
+          }
+        }
+      };
+    
+      const result =
+        await issuesCollection.updateOne(
+          query,
+          updateDoc
+        );
     
       res.send(result);
     
@@ -301,15 +484,11 @@ async function run() {
         ];
       }
     
-    
-    
       // CATEGORY FILTER
       if (category) {
     
         query.category = category;
       }
-    
-    
     
       // STATUS FILTER
       if (status) {
@@ -317,15 +496,11 @@ async function run() {
         query.status = status;
       }
     
-    
-    
       // PRIORITY FILTER
       if (priority) {
     
         query.priority = priority;
       }
-    
-    
     
       // SORTING
       let sortOption = {};
@@ -337,16 +512,12 @@ async function run() {
         };
       }
     
-    
-    
       if (sort === 'upvotes') {
     
         sortOption = {
           upvotes: -1
         };
       }
-    
-    
     
       // TOTAL COUNT
       const total =
@@ -383,49 +554,179 @@ async function run() {
     
       res.send(result);
     });
-    app.patch('/issues/upvote/:id', async (req, res) => {
+    app.get('/staff-stats/:email',
 
-      const id = req.params.id;
-    
-      const email = req.body.email;
-    
-      const issue = await issuesCollection.findOne({
-        _id: new ObjectId(id)
+  verifyJWT,
+
+  async (req, res) => {
+
+    const email = req.params.email;
+
+    const assigned =
+      await issuesCollection.countDocuments({
+
+        'assignedStaff.email': email
       });
-    
-      if (
-        issue.upvotedUsers &&
-        issue.upvotedUsers.includes(email)
-      ) {
-    
-        return res.send({
-          message: 'already upvoted'
-        });
-      }
-    
-      const result = await issuesCollection.updateOne(
-    
+
+    const resolved =
+      await issuesCollection.countDocuments({
+
+        'assignedStaff.email': email,
+
+        status: 'resolved'
+      });
+
+    const today =
+      await issuesCollection.countDocuments({
+
+        'assignedStaff.email': email,
+
+        status: {
+          $ne: 'closed'
+        }
+      });
+
+    res.send({
+
+      assigned,
+      resolved,
+      today
+    });
+
+});
+app.get('/assigned-issues/:email',
+
+  verifyJWT,
+
+  async (req, res) => {
+
+    const email = req.params.email;
+
+    const result =
+      await issuesCollection
+
+      .find({
+
+        'assignedStaff.email': email
+      })
+
+      .sort({
+
+        priority: -1
+      })
+
+      .toArray();
+
+    res.send(result);
+
+});
+
+// FIXED: Cleaned up duplicate status route and verified admin safety protection
+app.patch(
+  '/issues/status/:id',
+  verifyJWT,verifyStaff,
+  async (req, res) => {
+
+    const id = req.params.id;
+
+    const { status } = req.body;
+    let message = '';
+
+if (status === 'in-progress') {
+  message = 'Work started on the issue';
+}
+
+if (status === 'working') {
+  message = 'Issue is currently being worked on';
+}
+
+if (status === 'resolved') {
+  message = 'Issue marked as resolved';
+}
+
+if (status === 'closed') {
+  message = 'Issue closed by staff';
+}
+    const result =
+      await issuesCollection.updateOne(
+
         {
           _id: new ObjectId(id)
         },
-    
+
         {
-          $inc: {
-            upvotes: 1
-          },
-    
           $set: {
-            priority: 'high'
+            status
           },
-    
+
           $push: {
-            upvotedUsers: email
+            timeline: {
+              status,
+              message:
+                `Issue status changed to ${status}`,
+              updatedBy: "Staff",
+              time: new Date()
+            }
           }
         }
       );
-    
-      res.send(result);
-    });
+
+    res.send(result);
+});
+app.put('/users/profile/:email',
+
+verifyJWT,
+
+async (req, res) => {
+
+  const email = req.params.email;
+
+  const updatedData = req.body;
+
+  const filter = {
+    email
+  };
+
+  const updateDoc = {
+
+    $set: {
+
+      name: updatedData.name,
+
+      photo: updatedData.photo
+    }
+  };
+
+  const result =
+    await usersCollection.updateOne(
+      filter,
+      updateDoc
+    );
+
+  res.send(result);
+
+});
+app.get(
+
+  '/users/profile/:email',
+
+  verifyJWT,
+
+  async (req, res) => {
+
+    const email = req.params.email;
+
+    const query = {
+      email
+    };
+
+    const user =
+      await usersCollection.findOne(query);
+
+    res.send(user);
+
+});
+
     app.get(
       '/admin/issues',
       verifyJWT,
@@ -475,33 +776,91 @@ async function run() {
           premiumUsers
         });
     });
-    app.patch(
-      '/issues/status/:id',
-      verifyJWT,
-      verifyAdmin, async (req, res) => {
+    
+    app.post('/admin/staff/create', verifyJWT, verifyAdmin, async (req, res) => {
+      const { name, email, phone, photo, password } = req.body;
 
-      const id = req.params.id;
-    
-      const { status } = req.body;
-    
-      const filter = {
-        _id: new ObjectId(id)
-      };
-    
-      const updatedDoc = {
-    
-        $set: {
-          status
-        }
-      };
-    
-      const result = await issuesCollection.updateOne(
-        filter,
-        updatedDoc
-      );
-    
-      res.send(result);
+      try {
+        // 1. Create the user in Firebase Authentication via Admin SDK
+        const firebaseUser = await admin.auth().createUser({
+          email: email,
+          password: password,
+          displayName: name,
+          photoURL: photo,
+        });
+
+        // 2. Set Custom Claims so Firebase knows this user is explicitly 'staff'
+        await admin.auth().setCustomUserClaims(firebaseUser.uid, { role: 'staff' });
+
+        // 3. Document payload layout for MongoDB
+        const newStaffDoc = {
+          uid: firebaseUser.uid, // Linking Firebase UID to Mongo Document
+          name,
+          email,
+          phone,
+          photo,
+          role: 'staff',
+          premium: false,
+          blocked: false,
+          createdAt: new Date()
+        };
+        await usersCollection.insertOne({
+          uid: firebaseUser.uid,
+          name,
+          email,
+          phone,
+          photo,
+          role: 'staff',
+          premium: false,
+          blocked: false,
+          createdAt: new Date()
+        });
+        // 4. Save to MongoDB collection
+        const result = await staffCollection.insertOne(newStaffDoc);
+        
+        res.status(201).send({ insertedId: result.insertedId });
+
+      } catch (error) {
+        console.error("Error provisioning staff member:", error);
+        res.status(400).send({ 
+          message: error.message || "Failed to create staff credentials." 
+        });
+      }
     });
+    // GET all staff members directly from the staff collection
+app.get('/admin/staff', verifyJWT, verifyAdmin, async (req, res) => {
+  try {
+    const result = await staffCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to fetch staff data." });
+  }
+});
+
+// PUT to update staff details
+app.put('/admin/staff/:id', verifyJWT, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+  const updatedData = req.body;
+  const filter = { _id: new ObjectId(id) };
+  const updateDoc = {
+    $set: {
+      name: updatedData.name,
+      phone: updatedData.phone,
+      photo: updatedData.photo
+    }
+  };
+  const result = await staffCollection.updateOne(filter, updateDoc);
+  res.send(result);
+});
+
+// DELETE a staff member
+app.delete('/admin/staff/:id', verifyJWT, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const result = await staffCollection.deleteOne(query);
+  res.send(result);
+});
+
     app.get('/latest-resolved-issues', async (req, res) => {
 
       const result = await issuesCollection
@@ -614,7 +973,7 @@ async function run() {
     
       res.send(result);
     });
-
+   
     app.post('/create-payment-intent', async (req, res) => {
 
       const { amount } = req.body;
