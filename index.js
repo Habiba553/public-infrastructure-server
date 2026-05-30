@@ -49,7 +49,8 @@ async function run() {
 
     const issuesCollection = db.collection('issues');
     
-    const staffCollection = db.collection('staff'); // Fixed: Initialized staff collection required for your route
+    const staffCollection = db.collection('staff'); 
+    const paymentsCollection = db.collection('payments');
 
     // VERIFY JWT
     const verifyJWT = (req, res, next) => {
@@ -140,7 +141,7 @@ async function run() {
       const userData = req.body;
 
       const existingUser = await usersCollection.findOne({
-        email: userData.email
+        email: userData.email.toLowerCase(),
       });
 
       if (existingUser) {
@@ -150,8 +151,8 @@ async function run() {
       const result = await usersCollection.insertOne({
         ...userData,
         role: 'citizen',
-        name: userData.displayName,
-        photo: userData.photoURL,
+        name: userData.name,
+        photo: userData.photo,
         premium: false,
         blocked: false,
         createdAt: new Date()
@@ -425,7 +426,7 @@ async function run() {
     });
     app.get('/my-issues/:email', async (req, res) => {
 
-      const email = req.params.email;
+      const email = req.params.email.toLowerCase();;
     
       const query = {
         userEmail: email
@@ -522,7 +523,7 @@ async function run() {
       // TOTAL COUNT
       const total =
         await issuesCollection.countDocuments(query);
-    
+      
       // DATA
       const result = await issuesCollection
     
@@ -662,8 +663,7 @@ if (status === 'closed') {
           $push: {
             timeline: {
               status,
-              message:
-                `Issue status changed to ${status}`,
+              message,
               updatedBy: "Staff",
               time: new Date()
             }
@@ -743,7 +743,6 @@ app.get(
       '/admin/statistics',
       verifyJWT,
       verifyAdmin,
-    
       async (req, res) => {
     
         const totalUsers =
@@ -762,28 +761,77 @@ app.get(
             status: 'pending'
           });
     
+        const rejectedIssues =
+          await issuesCollection.countDocuments({
+            status: 'rejected'
+          });
+    
         const premiumUsers =
           await usersCollection.countDocuments({
             premium: true
           });
     
-        res.send({
+        const latestIssues =
+          await issuesCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray();
     
+        const latestUsers =
+          await usersCollection
+            .find({ role: 'citizen' })
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray();
+    
+        const latestPayments =
+          await paymentsCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray();
+    
+        const paymentData =
+          await paymentsCollection.find().toArray();
+    
+        const totalPaymentsReceived =
+          paymentData.reduce(
+            (sum, payment) =>
+              sum + Number(payment.amount || 0),
+            0
+          );
+    
+        res.send({
           totalUsers,
           totalIssues,
           resolvedIssues,
           pendingIssues,
-          premiumUsers
+          rejectedIssues,
+          premiumUsers,
+          totalPaymentsReceived,
+          latestIssues,
+          latestUsers,
+          latestPayments
         });
-    });
+      }
+    );
+    app.post('/payments', async (req, res) => {
+
+      const payment = req.body;
+      payment.createdAt = new Date();
+      const result =
+        await paymentsCollection.insertOne(payment);
     
+      res.send(result);
+    });
     app.post('/admin/staff/create', verifyJWT, verifyAdmin, async (req, res) => {
       const { name, email, phone, photo, password } = req.body;
-
+      const normalizedEmail = email.toLowerCase();
       try {
         // 1. Create the user in Firebase Authentication via Admin SDK
         const firebaseUser = await admin.auth().createUser({
-          email: email,
+          email: normalizedEmail,
           password: password,
           displayName: name,
           photoURL: photo,
@@ -796,7 +844,7 @@ app.get(
         const newStaffDoc = {
           uid: firebaseUser.uid, // Linking Firebase UID to Mongo Document
           name,
-          email,
+          email: normalizedEmail,
           phone,
           photo,
           role: 'staff',
@@ -807,7 +855,7 @@ app.get(
         await usersCollection.insertOne({
           uid: firebaseUser.uid,
           name,
-          email,
+          email: normalizedEmail,
           phone,
           photo,
           role: 'staff',
@@ -875,21 +923,21 @@ app.delete('/admin/staff/:id', verifyJWT, verifyAdmin, async (req, res) => {
     app.get(
       '/users/:email',
       verifyJWT,
-    
       async (req, res) => {
     
-        const email = req.params.email;
+        const email =  req.params.email.toLowerCase();;
     
-        if (email !== req.decoded.email) {
-    
-          return res.status(403).send({
-            message: 'forbidden access'
-          });
-        }
+        console.log("REQUEST EMAIL =", email);
+        console.log("JWT EMAIL =", req.decoded.email);
     
         const query = { email };
     
-        const user = await usersCollection.findOne(query);
+        const user =
+  await usersCollection.findOne({
+    email
+  });
+    
+        console.log("FOUND USER =", user);
     
         res.send(user);
     });
