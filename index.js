@@ -14,14 +14,22 @@ const stripe = Stripe(
 const app = express();
 const admin = require("firebase-admin");
 const port = process.env.PORT || 5000;
-const serviceAccount = require("./firbase-admin-config.json");
+// const serviceAccount = require("./firbase-admin-config.json");
+// const serviceAccount = require("./firebase-admin-key.json");
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173',
+    'https://public-infrastructure-sy-da732.web.app',
+    'https://public-infrastructure-sy-da732.firebaseapp.com'
+  ],
+
   credentials: true
 }));
 
@@ -86,7 +94,19 @@ async function run() {
       );
     };
 
-
+    const verifyNotBlocked = async (req, res, next) => {
+      const user = await usersCollection.findOne({
+        email: req.decoded.email
+      });
+    
+      if (user?.blocked) {
+        return res.status(403).send({
+          message: "Your account is blocked"
+        });
+      }
+    
+      next();
+    };
 
     // VERIFY ADMIN
     const verifyAdmin = async (req, res, next) => {
@@ -184,7 +204,7 @@ async function run() {
       res.send(result);
     });
 
-    app.post('/issues', async (req, res) => {
+    app.post('/issues',  verifyJWT, verifyNotBlocked, async (req, res) => {
 
       const issueData = req.body;
     
@@ -240,16 +260,19 @@ async function run() {
       res.send(result);
     });
 
-    app.patch('/issues/upvote/:id', verifyJWT, async (req, res) => {
+    app.patch('/issues/upvote/:id', verifyJWT,verifyNotBlocked,async (req, res) => {
       const id = req.params.id;
       const email = req.decoded.email;
       const query = {
         _id: new ObjectId(id)
       };
-    
-      const issue =
-        await issuesCollection.findOne(query);
-    
+      const issue = await issuesCollection.findOne(query);
+      if (!issue) {
+        return res.status(404).send({
+          message: 'Issue not found'
+        });
+      }
+      
       // OWN ISSUE CHECK
       if (issue.userEmail === email) {
     
@@ -262,7 +285,7 @@ async function run() {
       if (issue.upvotedUsers.includes(email)) {
     
         return res.status(403).send({
-          message: 'Already upvoted'
+          message: 'You have already upvoted this issue'
         });
       }
       const updateDoc = {
@@ -273,7 +296,6 @@ async function run() {
         $push: {
           timeline: {
             status: 'upvote',
-            upvotedUsers: email,
             message: 'Issue received an upvote',
             updatedBy: email,
             time: new Date()
@@ -324,7 +346,7 @@ async function run() {
     
         res.send(result);
     });
-    app.delete('/issues/:id', verifyJWT, async (req, res) => {
+    app.delete('/issues/:id', verifyJWT,  async (req, res) => {
 
       const id = req.params.id;
     
@@ -338,7 +360,7 @@ async function run() {
       res.send(result);
     
     });
-    app.patch('/issues/:id', verifyJWT, async (req, res) => {
+    app.patch('/issues/:id', verifyJWT,verifyNotBlocked, async (req, res) => {
 
       const id = req.params.id;
       const updatedData = req.body;
@@ -386,42 +408,47 @@ async function run() {
       res.send(result);
     
     });
-    app.patch('/issues/boost/:id', verifyJWT, async (req, res) => {
-
-      const id = req.params.id;
+    app.patch(
+      '/issues/boost/:id',
+      verifyJWT,
+      verifyNotBlocked,
+      async (req, res) => {
     
-      const query = {
-        _id: new ObjectId(id)
-      };
+        const id = req.params.id;
     
-      const updateDoc = {
+        const result =
+          await issuesCollection.updateOne(
     
-        $set: {
-          priority: 'high'
-        },
+            {
+              _id:
+                new ObjectId(id)
+            },
     
-        $push: {
+            {
+              $set: {
+                priority: 'high'
+              },
     
-          timeline: {
+              $push: {
     
-            status: 'boosted',
+                timeline: {
     
-            message: 'Issue priority boosted',
+                  status: 'boosted',
     
-            updatedBy: req.decoded.email,
+                  message:
+                    'Issue priority boosted after payment',
     
-            time: new Date()
-          }
-        }
-      };
+                  updatedBy:
+                    'Citizen',
     
-      const result =
-        await issuesCollection.updateOne(
-          query,
-          updateDoc
-        );
+                  time:
+                    new Date()
+                }
+              }
+            }
+          );
     
-      res.send(result);
+        res.send(result);
     
     });
     app.get('/my-issues/:email', async (req, res) => {
@@ -673,6 +700,7 @@ if (status === 'closed') {
 
     res.send(result);
 });
+
 app.put('/users/profile/:email',
 
 verifyJWT,
@@ -816,14 +844,43 @@ app.get(
         });
       }
     );
+    app.get(
+      '/payments',
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        const result =
+          await paymentsCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+    
+        res.send(result);
+    
+    });
     app.post('/payments', async (req, res) => {
-
       const payment = req.body;
       payment.createdAt = new Date();
       const result =
         await paymentsCollection.insertOne(payment);
-    
       res.send(result);
+    });
+    app.get(
+      '/payments/:email',
+      verifyJWT,
+      async (req, res) => {
+    
+        const email =
+          req.params.email;
+    
+        const result =
+          await paymentsCollection
+            .find({ email })
+            .sort({ createdAt: -1 })
+            .toArray();
+    
+        res.send(result);
+    
     });
     app.post('/admin/staff/create', verifyJWT, verifyAdmin, async (req, res) => {
       const { name, email, phone, photo, password } = req.body;
@@ -1043,7 +1100,7 @@ app.delete('/admin/staff/:id', verifyJWT, verifyAdmin, async (req, res) => {
       });
     });
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
 
     console.log("MongoDB Connected Successfully");
 
