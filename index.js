@@ -29,7 +29,6 @@ app.use(cors({
     'https://public-infrastructure-sy-da732.web.app',
     'https://public-infrastructure-sy-da732.firebaseapp.com'
   ],
-
   credentials: true
 }));
 
